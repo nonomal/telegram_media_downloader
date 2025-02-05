@@ -3,7 +3,10 @@ import sys
 import unittest
 from datetime import datetime
 
+import mock
+
 from module.filter import Filter, MetaData
+from module.pyrogram_extension import set_meta_data
 from tests.test_common import (
     Chat,
     Date,
@@ -11,9 +14,11 @@ from tests.test_common import (
     MockDocument,
     MockMessage,
     MockPhoto,
+    MockUser,
     MockVideo,
     MockVideoNote,
     MockVoice,
+    get_extension,
 )
 from utils.format import replace_date_time
 
@@ -30,6 +35,7 @@ def check_filter_exec(download_filter: Filter, filter_str: str) -> bool:
     return download_filter.check_filter(filter_str)
 
 
+@mock.patch("module.pyrogram_extension.get_extension", new=get_extension)
 class FilterTestCase(unittest.TestCase):
     def test_string_filter(self):
         download_filter = Filter()
@@ -51,9 +57,13 @@ class FilterTestCase(unittest.TestCase):
                 height=1080,
                 duration=35,
             ),
+            from_user=MockUser(
+                username="coco",
+                id=123,
+            ),
         )
 
-        meta.get_meta_data(message)
+        set_meta_data(meta, message)
 
         self.assertEqual(meta.message_id, 5)
         self.assertEqual(meta.message_date, datetime(2022, 8, 5, 14, 35, 12))
@@ -63,6 +73,8 @@ class FilterTestCase(unittest.TestCase):
         self.assertEqual(meta.media_height, 1080)
         self.assertEqual(meta.media_file_name, "test.mp4")
         self.assertEqual(meta.media_duration, 35)
+        self.assertEqual(meta.media_type, "video")
+        self.assertEqual(meta.file_extension, "mp4")
 
         download_filter.set_meta_data(meta)
 
@@ -206,6 +218,37 @@ class FilterTestCase(unittest.TestCase):
         # test caption
         self.assertEqual(filter_exec(download_filter, "caption == r'.*#test.*'"), False)
 
+        # test media_type
+        self.assertEqual(filter_exec(download_filter, "media_type == 'video'"), True)
+
+        self.assertEqual(filter_exec(download_filter, "media_type == 'audio'"), False)
+
+        self.assertEqual(
+            filter_exec(download_filter, "media_type == r'(video|audio)'"), True
+        )
+
+        self.assertEqual(
+            filter_exec(download_filter, "media_type != r'(video|audio)'"), False
+        )
+
+        # test file_extension
+        self.assertEqual(filter_exec(download_filter, "file_extension == 'mp4'"), True)
+
+        self.assertEqual(filter_exec(download_filter, "file_extension == 'mp3'"), False)
+
+        self.assertEqual(
+            filter_exec(download_filter, "file_extension == r'(mp4|mp3)'"), True
+        )
+
+        self.assertEqual(
+            filter_exec(download_filter, "file_extension != r'(mp4|mp3)'"), False
+        )
+
+        # test sender
+        self.assertEqual(filter_exec(download_filter, "sender_name == 'coco'"), True)
+
+        self.assertEqual(filter_exec(download_filter, "sender_id == 1"), False)
+
     def test_null_obj(self):
         download_filter = Filter()
 
@@ -224,7 +267,7 @@ class FilterTestCase(unittest.TestCase):
             ),
         )
 
-        meta.get_meta_data(message)
+        set_meta_data(meta, message)
 
         download_filter.set_meta_data(meta)
 
@@ -254,9 +297,10 @@ class FilterTestCase(unittest.TestCase):
                 height=1080,
                 duration=35,
             ),
+            reply_to_message_id=4,
         )
 
-        meta.get_meta_data(message)
+        set_meta_data(meta, message)
 
         self.assertEqual(meta.message_id, 5)
         self.assertEqual(meta.message_date, datetime(2022, 8, 5, 14, 35, 12))
@@ -276,6 +320,12 @@ class FilterTestCase(unittest.TestCase):
         self.assertEqual(filter_exec(download_filter, "caption == r'.*#中文.*'"), True)
 
         self.assertEqual(filter_exec(download_filter, "caption == r'.*#中文啊.*'"), False)
+
+        self.assertEqual(filter_exec(download_filter, "reply_to_message_id == 4"), True)
+        self.assertEqual(
+            filter_exec(download_filter, "reply_to_message_id != 4"), False
+        )
+        self.assertEqual(filter_exec(download_filter, "reply_to_message_id >= 4"), True)
 
     def test_check_filter(self):
         download_filter = Filter()
@@ -297,7 +347,7 @@ class FilterTestCase(unittest.TestCase):
             ),
         )
 
-        meta.get_meta_data(message)
+        set_meta_data(meta, message)
 
         download_filter.set_debug(True)
         download_filter.set_meta_data(meta)
@@ -380,14 +430,14 @@ class FilterTestCase(unittest.TestCase):
     def test_normal(self):
         download_filter = Filter()
         print(download_filter.filter.names)
-        meta = MetaData("2022/03/08 10:00:00", 0, "#高桥千x", 0, 0, 0, "", 0)
+        meta = MetaData(datetime(2022, 3, 8, 10, 0, 0), 0, "#高桥千x", 0, 0, 0, "", 0)
         download_filter.set_meta_data(meta)
         self.assertEqual(check_filter_exec(download_filter, "id > 1"), (True, None))
         download_filter.set_debug(True)
         filter_exec(download_filter, "caption == r'.*高桥.*'")
 
         download_filter2 = Filter()
-        meta2 = MetaData("2022/03/08 10:00:00", 0, "", 0, 0, 0, "", 0)
+        meta2 = MetaData(datetime(2022, 3, 8, 10, 0, 0), 0, "", 0, 0, 0, "", 0)
         download_filter2.set_meta_data(meta2)
         download_filter2.set_debug(True)
         filter_exec(download_filter2, "caption == r'.*高桥.*'")

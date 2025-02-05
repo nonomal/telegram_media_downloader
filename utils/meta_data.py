@@ -15,6 +15,8 @@ class NoneObj:
         pass
 
 
+# pylint: disable=R0902
+# pylint: disable=R0913
 class MetaData:
     """
     * `message_date` : - Date the message was sent
@@ -26,6 +28,9 @@ class MetaData:
     * `media_file_name` : - file name
     * `message_caption` : - message_caption
     * `message_duration` : - message_duration
+    * `sender_id` : - Sender id, empty for messages sent to channels.
+    * `sender_name` : - Sender name, empty for messages sent to channels.
+    " `reply_to_message_id` : - reply_to_message_id
     """
 
     AVAILABLE_MEDIA = (
@@ -50,6 +55,12 @@ class MetaData:
         media_height: int = None,
         media_file_name: str = None,
         media_duration: int = None,
+        media_type: str = None,
+        file_extension: str = None,
+        sender_id: int = None,
+        sender_name: str = None,
+        reply_to_message_id: int = None,
+        message_thread_id: int = None,
     ):
         self.message_date = message_date
         self.message_id = message_id
@@ -59,6 +70,12 @@ class MetaData:
         self.media_height = media_height
         self.media_file_name = media_file_name
         self.media_duration = media_duration
+        self.media_type = media_type
+        self.file_extension = file_extension
+        self.sender_id = sender_id
+        self.sender_name = sender_name
+        self.reply_to_message_id = reply_to_message_id
+        self.message_thread_id = message_thread_id
 
     def data(self) -> dict:
         """Meta map"""
@@ -71,31 +88,35 @@ class MetaData:
             "media_height": self.media_height,
             "media_file_name": self.media_file_name,
             "media_duration": self.media_duration,
-            # small
             "id": self.message_id,
             "caption": self.message_caption,
             "file_size": self.media_file_size,
             "file_name": self.media_file_name,
+            "media_type": self.media_type,
+            "file_extension": self.file_extension,
+            "sender_id": self.sender_id,
+            "sender_name": self.sender_name,
+            "reply_to_message_id": self.reply_to_message_id,
+            "message_thread_id": self.message_thread_id,
+            "topic_id": self.message_thread_id,
         }
 
-    def get_meta_data(self, meta_obj):
-        """Get all meta data"""
-        # message
-        self.message_date = getattr(meta_obj, "date", None)
-
-        self.message_caption = getattr(meta_obj, "caption", None) or ""
-        self.message_id = getattr(meta_obj, "id", None)
-
-        for kind in self.AVAILABLE_MEDIA:
-            media_obj = getattr(meta_obj, kind, None)
-
-            if media_obj is not None:
-                break
-        else:
-            return
-
-        self.media_file_name = getattr(media_obj, "file_name", None) or ""
-        self.media_file_size = getattr(media_obj, "file_size", None)
-        self.media_width = getattr(media_obj, "width", None)
-        self.media_height = getattr(media_obj, "height", None)
-        self.media_duration = getattr(media_obj, "duration", None)
+    def export(self) -> dict:
+        """Export meta data"""
+        return {
+            "message_date": self.message_date,
+            "message_id": self.message_id,
+            "message_caption": self.message_caption,
+            "media_file_size": self.media_file_size,
+            "media_width": self.media_width,
+            "media_height": self.media_height,
+            "media_file_name": self.media_file_name,
+            "media_duration": self.media_duration,
+            "media_type": self.media_type,
+            "file_extension": self.file_extension,
+            "sender_id": self.sender_id,
+            "sender_name": self.sender_name,
+            "reply_to_message_id": self.reply_to_message_id,
+            "message_thread_id": self.message_thread_id,
+            "topic_id": self.message_thread_id,
+        }

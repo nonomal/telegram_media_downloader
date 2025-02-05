@@ -10,7 +10,6 @@ from typing import List, Union
 
 import mock
 import pyrogram
-from pyrogram.file_id import PHOTO_TYPES, FileType
 
 from media_downloader import (
     _can_download,
@@ -22,11 +21,16 @@ from media_downloader import (
     download_media,
     download_task,
     main,
+    save_msg_to_file,
     worker,
 )
 from module.app import Application, DownloadStatus, TaskNode
 from module.cloud_drive import CloudDriveConfig
-from module.pyrogram_extension import record_download_status, reset_download_cache
+from module.pyrogram_extension import (
+    get_extension,
+    record_download_status,
+    reset_download_cache,
+)
 
 from .test_common import (
     Chat,
@@ -38,6 +42,7 @@ from .test_common import (
     MockVideo,
     MockVideoNote,
     MockVoice,
+    get_extension,
     platform_generic_path,
 )
 
@@ -81,23 +86,6 @@ def os_get_file_size(file: str) -> int:
     return 0
 
 
-def new_set_download_id(
-    chat_id: Union[int, str], message_id: int, download_status: DownloadStatus
-):
-    if download_status is DownloadStatus.SuccessDownload:
-        app.total_download_task += 1
-    if chat_id not in app.chat_download_config:
-        return
-    app.chat_download_config[chat_id].last_read_message_id = max(
-        app.chat_download_config[chat_id].last_read_message_id, message_id
-    )
-    if download_status is not DownloadStatus.FailedDownload:
-        app.chat_download_config[chat_id].downloaded_ids.append(message_id)
-    else:
-        app.chat_download_config[chat_id].failed_ids.append(message_id)
-    app.is_running = False
-
-
 def rest_app(conf: dict):
     config_test = os.path.join(os.path.abspath("."), "config_test.yaml")
     data_test = os.path.join(os.path.abspath("."), "data_test.yaml")
@@ -109,7 +97,6 @@ def rest_app(conf: dict):
     app.is_running = True
     app.chat_download_config: dict = {}
     # app.already_download_ids_set = set()
-    app.disable_syslog: list = []
     app.save_path = os.path.abspath(".")
     app.api_id: str = ""
     app.api_hash: str = ""
@@ -150,8 +137,8 @@ async def new_upload_telegram_chat(
     app: Application,
     node: TaskNode,
     message: pyrogram.types.Message,
-    file_name: str,
     download_status: DownloadStatus,
+    file_name: str = None,
 ):
     pass
 
@@ -162,69 +149,6 @@ def raise_exception():
 
 def load_config():
     raise ValueError("error load config")
-
-
-def get_file_type(file_id: str):
-    if file_id == "THUMBNAIL":
-        return FileType.THUMBNAIL
-    elif file_id == "CHAT_PHOTO":
-        return FileType.CHAT_PHOTO
-    elif file_id == "PHOTO":
-        return FileType.PHOTO
-    elif file_id == "VOICE":
-        return FileType.VOICE
-    elif file_id == "VIDEO":
-        return FileType.VIDEO
-    elif file_id == "DOCUMENT":
-        return FileType.DOCUMENT
-    elif file_id == "ENCRYPTED":
-        return FileType.ENCRYPTED
-    elif file_id == "TEMP":
-        return FileType.TEMP
-    elif file_id == "STICKER":
-        return FileType.STICKER
-    elif file_id == "AUDIO":
-        return FileType.AUDIO
-    elif file_id == "ANIMATION":
-        return FileType.ANIMATION
-    elif file_id == "ENCRYPTED_THUMBNAIL":
-        return FileType.ENCRYPTED_THUMBNAIL
-    elif file_id == "WALLPAPER":
-        return FileType.WALLPAPER
-    elif file_id == "VIDEO_NOTE":
-        return FileType.VIDEO_NOTE
-    elif file_id == "SECURE_RAW":
-        return FileType.SECURE_RAW
-    elif file_id == "SECURE":
-        return FileType.SECURE
-    elif file_id == "BACKGROUND":
-        return FileType.BACKGROUND
-    elif file_id == "DOCUMENT_AS_FILE":
-        return FileType.DOCUMENT_AS_FILE
-
-    raise ValueError("error file id!")
-
-
-def get_extension(file_id: str, mime_type: str):
-    file_type = get_file_type(file_id=file_id)
-    guessed_extension = ""
-
-    if file_type in PHOTO_TYPES:
-        extension = ".jpg"
-    elif file_type == FileType.VOICE:
-        extension = guessed_extension or ".ogg"
-    elif file_type in (FileType.VIDEO, FileType.ANIMATION, FileType.VIDEO_NOTE):
-        extension = guessed_extension or ".mp4"
-    elif file_type == FileType.DOCUMENT:
-        extension = guessed_extension or ".zip"
-    elif file_type == FileType.STICKER:
-        extension = guessed_extension or ".webp"
-    elif file_type == FileType.AUDIO:
-        extension = guessed_extension or ".mp3"
-    else:
-        extension = ".unknown"
-
-    return extension
 
 
 class MyQueue:
@@ -263,7 +187,8 @@ async def async_get_media_meta(chat_id, message, message_media, _type):
 async def async_download_media(
     client, message, media_types, file_formats, chat_id=-123
 ):
-    return await download_media(client, message, media_types, file_formats, chat_id)
+    node = TaskNode(chat_id=chat_id)
+    return await download_media(client, message, media_types, file_formats, node)
 
 
 def mock_move_to_download_path(temp_download_path: str, download_path: str):
@@ -278,6 +203,36 @@ async def new_fetch_message(client: pyrogram.Client, message: pyrogram.types.Mes
     return message
 
 
+async def get_chat_history(client, *args, **kwargs):
+    items = [
+        MockMessage(
+            id=1213,
+            media=True,
+            voice=MockVoice(
+                mime_type="audio/ogg",
+                date=datetime(2019, 7, 25, 14, 53, 50),
+            ),
+        ),
+        MockMessage(
+            id=1214,
+            media=False,
+            text="test message 1",
+        ),
+        MockMessage(
+            id=1215,
+            media=False,
+            text="test message 2",
+        ),
+        MockMessage(
+            id=1216,
+            media=False,
+            text="test message 3",
+        ),
+    ]
+    for item in items:
+        yield item
+
+
 class MockClient:
     def __init__(self, *args, **kwargs):
         pass
@@ -290,35 +245,6 @@ class MockClient:
 
     async def stop(self):
         pass
-
-    async def get_chat_history(self, *args, **kwargs):
-        items = [
-            MockMessage(
-                id=1213,
-                media=True,
-                voice=MockVoice(
-                    mime_type="audio/ogg",
-                    date=datetime(2019, 7, 25, 14, 53, 50),
-                ),
-            ),
-            MockMessage(
-                id=1214,
-                media=False,
-                text="test message 1",
-            ),
-            MockMessage(
-                id=1215,
-                media=False,
-                text="test message 2",
-            ),
-            MockMessage(
-                id=1216,
-                media=False,
-                text="test message 3",
-            ),
-        ]
-        for item in items:
-            yield item
 
     async def get_messages(self, *args, **kwargs):
         if kwargs["message_ids"] == 7:
@@ -420,9 +346,16 @@ class MockClient:
         return True
 
 
+def check_for_updates(_: dict = None):
+    pass
+
+
 @mock.patch("media_downloader.get_extension", new=get_extension)
+@mock.patch("module.pyrogram_extension.get_extension", new=get_extension)
 @mock.patch("media_downloader.fetch_message", new=new_fetch_message)
+@mock.patch("media_downloader.get_chat_history_v2", new=get_chat_history)
 @mock.patch("media_downloader.RETRY_TIME_OUT", new=0)
+@mock.patch("media_downloader.check_for_updates", new=check_for_updates)
 class MediaDownloaderTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -916,7 +849,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         )
         self.assertEqual((DownloadStatus.FailedDownload, None), result)
 
-    @mock.patch("media_downloader.pyrogram.Client", new=MockClient)
+    @mock.patch("media_downloader.HookClient", new=MockClient)
     @mock.patch("media_downloader.asyncio.Queue.put")
     def test_download_task(self, moc_put):
         rest_app(MOCK_CONF)
@@ -953,6 +886,35 @@ class MediaDownloaderTestCase(unittest.TestCase):
 
         result2 = _is_exist(this_dir)
         self.assertEqual(result2, False)
+
+    @mock.patch("media_downloader.os.makedirs")
+    @mock.patch("builtins.open", new_callable=mock.mock_open)
+    def test_save_msg_to_file(self, mock_open, mock_makedirs):
+        rest_app(MOCK_CONF)
+        app.enable_download_txt = True
+        app.temp_save_path = "/tmp"
+        app.date_format = "%Y_%m"
+
+        message = MockMessage(
+            id=123,
+            dis_chat=True,
+            chat=Chat(chat_id=456, chat_title="Test Chat"),
+            date=datetime(2023, 5, 15, 10, 30, 0),
+            text="This is a test message",
+        )
+
+        expected_file_path = platform_generic_path(
+            "/root/project/Test Chat/2023_05/123.txt"
+        )
+
+        result = self.loop.run_until_complete(save_msg_to_file(app, 456, message))
+
+        self.assertEqual(result, (DownloadStatus.SuccessDownload, expected_file_path))
+        mock_makedirs.assert_called_once_with(
+            os.path.dirname(expected_file_path), exist_ok=True
+        )
+        mock_open.assert_called_once_with(expected_file_path, "w", encoding="utf-8")
+        mock_open().write.assert_called_once_with("This is a test message")
 
     @mock.patch("media_downloader.RETRY_TIME_OUT", new=0)
     @mock.patch("media_downloader.os.path.getsize", new=os_get_file_size)
@@ -1033,23 +995,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
 
         self.assertEqual(res, (DownloadStatus.SkipDownload, None))
 
-    @mock.patch(
-        "media_downloader._exec_loop",
-        new=raise_keyboard_interrupt,
-    )
-    @mock.patch("media_downloader.pyrogram.Client", new=MockClient)
-    @mock.patch("media_downloader.RETRY_TIME_OUT", new=1)
-    @mock.patch("media_downloader.logger")
-    def test_main(self, mock_logger):
-        rest_app(MOCK_CONF)
-
-        main()
-
-        mock_logger.success.assert_called_with(
-            "Updated last read message_id to config file,total download 0, total upload file 0"
-        )
-
-    @mock.patch("media_downloader.pyrogram.Client", new=MockClient)
+    @mock.patch("media_downloader.HookClient", new=MockClient)
     @mock.patch("media_downloader.RETRY_TIME_OUT", new=1)
     @mock.patch("media_downloader.logger")
     def test_main_with_bot(self, mock_logger):
@@ -1062,7 +1008,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         )
 
     @mock.patch("media_downloader.app.pre_run", new=raise_keyboard_interrupt)
-    @mock.patch("media_downloader.pyrogram.Client", new=MockClient)
+    @mock.patch("media_downloader.HookClient", new=MockClient)
     @mock.patch("media_downloader.RETRY_TIME_OUT", new=1)
     @mock.patch("media_downloader.logger")
     def test_keyboard_interrupt(self, mock_logger):
@@ -1076,7 +1022,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         )
 
     @mock.patch("media_downloader.app.pre_run", new=raise_exception)
-    @mock.patch("media_downloader.pyrogram.Client", new=MockClient)
+    @mock.patch("media_downloader.HookClient", new=MockClient)
     @mock.patch("media_downloader.RETRY_TIME_OUT", new=1)
     @mock.patch("media_downloader.logger")
     def test_other_exception(self, mock_logger):

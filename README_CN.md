@@ -32,9 +32,20 @@
 
 ### 界面
 
-![web](./screenshot/web_ui.gif)
+#### 网页
 
-运行后打开浏览器访问`localhost:5000`
+> 运行后打开浏览器访问`localhost:5000`
+> 如果是远程机器需要配置web_host: 0.0.0.0
+
+
+<img alt="Code style: black" style="width:100%; high:60%;" src="./screenshot/web_ui.gif"/>
+
+### 机器人
+
+> 需要配置bot_token,具体参考[文档](https://github.com/tangyoha/telegram_media_downloader/wiki/%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8%E6%9C%BA%E5%99%A8%E4%BA%BA%E4%B8%8B%E8%BD%BD)
+
+
+<img alt="Code style: black" style="width:60%; high:30%; " src="./screenshot/bot.gif"/>
 
 ### 支持
 
@@ -149,6 +160,7 @@ media_types:
 - photo
 - video
 - voice
+- animation #gif
 file_formats:
   audio:
   - all
@@ -161,8 +173,6 @@ save_path: D:\telegram_media_downloader
 file_path_prefix:
 - chat_title
 - media_datetime
-disable_syslog:
-- INFO
 upload_drive:
   enable_upload_file: true
   remote_dir: drive:/telegram
@@ -176,6 +186,11 @@ file_name_prefix_split: ' - '
 max_download_task: 5
 web_host: 127.0.0.1
 web_port: 5000
+web_login_secret: 123
+allowed_user_ids:
+- 'me'
+date_format: '%Y_%m'
+enable_download_txt: false
 ```
 
 - **api_hash** - 你从电报应用程序获得的 api_hash
@@ -195,7 +210,6 @@ web_port: 5000
   - `chat_title`      - 聊天频道或者群组标题, 如果找不到标题则为配置文件中的`chat_id`
   - `media_datetime`  - 资源的发布时间
   - `media_type`      - 资源类型，类型查阅 `media_types`
-- **disable_syslog** - 您可以选择要禁用的日志类型，请参阅 `logging._nameToLevel`
 - **upload_drive** - 您可以将文件上传到云盘
   - `enable_upload_file` - [必填]启用上传文件，默认为`false`
   - `remote_dir` - [必填]你上传的地方
@@ -213,6 +227,12 @@ web_port: 5000
 - **web_host** - web界面地址
 - **web_port** - web界面端口
 - **language** - 应用语言，默认为英文(`EN`),可选`ZH`（中文）,`RU`,`UA`
+- **web_login_secret** - 网页登录密码，如果不配置则访问网页不需要登录
+- **log_level** - 默认日志等级，请参阅 `logging._nameToLevel`
+- **forward_limit** - 限制每分钟转发次数，默认为33，默认请不要修改该参数
+- **allowed_user_ids** - 允许哪些人使用机器人，默认登录账号可以使用，带@的名称请加单引号
+- **date_format** - 支持自定义配置file_path_prefix中media_datetime的格式，具体格式查看 [python-datetime](https://docs.python.org/zh-cn/3/library/time.html)
+- **enable_download_txt** 启用下载txt文件，默认`false`
 
 ## 执行
 

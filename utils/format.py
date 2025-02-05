@@ -4,8 +4,20 @@ import math
 import os
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
+from urllib.parse import parse_qs, urlparse
+
+
+@dataclass
+class Link:
+    """Telegram Link"""
+
+    group_id: Union[str, int, None] = None
+    post_id: Optional[int] = None
+    comment_id: Optional[int] = None
+    topic_id: Optional[int] = None
 
 
 def format_byte(size: float, dot=2):
@@ -205,24 +217,45 @@ def truncate_filename(path: str, limit: int = 230) -> str:
     return os.path.join(p, f_trunc + e)
 
 
-def extract_info_from_link(link: str):
+def extract_info_from_link(link: str) -> Link:
     """Extract info from link"""
     if link in ("me", "self"):
-        return link, None
+        return Link(group_id=link)
 
-    channel_match = re.match(r"(?:https?://)?t\.me/c/(\w+)(?:/(\d+))?", link)
-    if channel_match:
-        chat_id = f"-100{channel_match.group(1)}"
-        message_id = int(channel_match.group(2)) if channel_match.group(2) else None
-        return int(chat_id), message_id
+    try:
+        u = urlparse(link)
+        paths = [p for p in u.path.split("/") if p]
+        query = parse_qs(u.query)
+    except ValueError:
+        return Link()
 
-    username_match = re.match(r"(?:https?://)?t\.me/(\w+)(?:/(\d+))?", link)
-    if username_match:
-        username = username_match.group(1)
-        message_id = int(username_match.group(2)) if username_match.group(2) else None
-        return username, message_id
+    result = Link()
 
-    return None, None
+    if "comment" in query:
+        result.group_id = paths[0]
+        result.comment_id = int(query["comment"][0])
+    elif len(paths) == 1 and paths[0] != "c":
+        result.group_id = paths[0]
+    elif len(paths) == 2:
+        if paths[0] == "c":
+            result.group_id = int(f"-100{paths[1]}")
+        else:
+            result.group_id = paths[0]
+            result.post_id = int(paths[1])
+    elif len(paths) == 3:
+        if paths[0] == "c":
+            result.group_id = int(f"-100{paths[1]}")
+            result.post_id = int(paths[2])
+        else:
+            result.group_id = paths[0]
+            result.topic_id = int(paths[1])
+            result.post_id = int(paths[2])
+    elif len(paths) == 4 and paths[0] == "c":
+        result.group_id = int(f"-100{paths[1]}")
+        result.topic_id = int(paths[2])
+        result.post_id = int(paths[3])
+
+    return result
 
 
 def validate_title(title: str) -> str:

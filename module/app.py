@@ -4,9 +4,12 @@ import asyncio
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
+from loguru import logger
 from ruamel import yaml
 
 from module.cloud_drive import CloudDrive, CloudDriveConfig
@@ -35,6 +38,17 @@ class ForwardStatus(Enum):
     SuccessForward = 2
     FailedForward = 3
     Forwarding = 4
+    StopForward = 5
+    CacheForward = 6
+
+
+class UploadStatus(Enum):
+    """Upload status"""
+
+    SkipUpload = 1
+    SuccessUpload = 2
+    FailedUpload = 3
+    Uploading = 4
 
 
 class TaskType(Enum):
@@ -43,6 +57,61 @@ class TaskType(Enum):
     Download = 1
     Forward = 2
     ListenForward = 3
+
+
+class QueryHandler(Enum):
+    """Query handler"""
+
+    StopDownload = 1
+    StopForward = 2
+    StopListenForward = 3
+
+
+@dataclass
+class UploadProgressStat:
+    """Upload task"""
+
+    file_name: str
+    total_size: int
+    upload_size: int
+    start_time: float
+    last_stat_time: float
+    upload_speed: float
+
+
+@dataclass
+class CloudDriveUploadStat:
+    """Cloud drive upload task"""
+
+    file_name: str
+    transferred: str
+    total: str
+    percentage: str
+    speed: str
+    eta: str
+
+
+class QueryHandlerStr:
+    """Query handler"""
+
+    _strMap = {
+        QueryHandler.StopDownload.value: "stop_download",
+        QueryHandler.StopForward.value: "stop_forward",
+        QueryHandler.StopListenForward.value: "stop_listen_forward",
+    }
+
+    @staticmethod
+    def get_str(value):
+        """
+        Get the string value associated with the given value.
+
+        Parameters:
+            value (any): The value for which to retrieve the string value.
+
+        Returns:
+            str: The string value associated with the given value.
+        """
+        return QueryHandlerStr._strMap[value]
 
 
 class TaskNode:
@@ -57,11 +126,14 @@ class TaskNode:
         replay_message: str = None,
         upload_telegram_chat_id: Union[int, str] = None,
         has_protected_content: bool = False,
-        download_filter: str = "",
+        download_filter: str = None,
         limit: int = 0,
+        start_offset_id: int = 0,
+        end_offset_id: int = 0,
         bot=None,
         task_type: TaskType = TaskType.Download,
         task_id: int = 0,
+        topic_id: int = 0,
     ):
         self.chat_id = chat_id
         self.from_user_id = from_user_id
@@ -71,6 +143,8 @@ class TaskNode:
         self.has_protected_content = has_protected_content
         self.download_filter = download_filter
         self.limit = limit
+        self.start_offset_id = start_offset_id
+        self.end_offset_id = end_offset_id
         self.bot = bot
         self.task_id = task_id
         self.task_type = task_type
@@ -89,13 +163,38 @@ class TaskNode:
         self.failed_forward_task: int = 0
         self.skip_forward_task: int = 0
         self.is_running: bool = False
+        self.client = None
+        self.upload_success_count: int = 0
+        self.is_stop_transmission = False
+        self.media_group_ids: dict = {}
+        self.download_status: dict = {}
+        self.upload_status: dict = {}
+        self.upload_stat_dict: dict = {}
+        self.topic_id = topic_id
+        self.reply_to_message = None
+        self.cloud_drive_upload_stat_dict: dict = {}
+
+    def skip_msg_id(self, msg_id: int):
+        """Skip if message id out of range"""
+        if self.start_offset_id and msg_id < self.start_offset_id:
+            return True
+
+        if self.end_offset_id and msg_id > self.end_offset_id:
+            return True
+
+        return False
 
     def is_finish(self):
         """If is finish"""
-        return (
-            self.task_type != TaskType.ListenForward
+        return self.is_stop_transmission or (
+            self.is_running
+            and self.task_type != TaskType.ListenForward
             and self.total_task == self.total_download_task
         )
+
+    def stop_transmission(self):
+        """Stop task"""
+        self.is_stop_transmission = True
 
     def stat(self, status: DownloadStatus):
         """
@@ -115,15 +214,15 @@ class TaskNode:
         else:
             self.failed_download_task += 1
 
-    def stat_forward(self, status: ForwardStatus):
+    def stat_forward(self, status: ForwardStatus, count: int = 1):
         """Stat upload"""
-        self.total_forward_task += 1
+        self.total_forward_task += count
         if status is ForwardStatus.SuccessForward:
-            self.success_forward_task += 1
+            self.success_forward_task += count
         elif status is ForwardStatus.SkipForward:
-            self.skip_forward_task += 1
+            self.skip_forward_task += count
         else:
-            self.failed_forward_task += 1
+            self.failed_forward_task += count
 
     def can_reply(self):
         """
@@ -142,12 +241,60 @@ class TaskNode:
         return False
 
 
+class LimitCall:
+    """Limit call"""
+
+    def __init__(
+        self,
+        max_limit_call_times: int = 0,
+        limit_call_times: int = 0,
+        last_call_time: float = 0,
+    ):
+        """
+        Initializes the object with the given parameters.
+
+        Args:
+            max_limit_call_times (int): The maximum limit of call times allowed.
+            limit_call_times (int): The current limit of call times.
+            last_call_time (int): The time of the last call.
+
+        Returns:
+            None
+        """
+        self.max_limit_call_times = max_limit_call_times
+        self.limit_call_times = limit_call_times
+        self.last_call_time = last_call_time
+
+    async def wait(self, node: TaskNode):
+        """
+        Wait for a certain period of time before continuing execution.
+
+        This function does not take any parameters.
+
+        This function does not return anything.
+        """
+        while True:
+            now = time.time()
+            time_span = now - self.last_call_time
+            if node.is_stop_transmission:
+                break
+
+            if time_span > 60:
+                self.limit_call_times = 0
+                self.last_call_time = now
+
+            if self.limit_call_times + 1 <= self.max_limit_call_times:
+                self.limit_call_times += 1
+                break
+
+            # logger.debug("Waiting for 10 seconds...")
+            await asyncio.sleep(1)
+
+
 class ChatDownloadConfig:
     """Chat Message Download Status"""
 
     def __init__(self):
-        self.downloaded_ids: list = []
-        self.failed_ids: list = []
         self.ids_to_retry_dict: dict = {}
 
         # need storage
@@ -158,6 +305,36 @@ class ChatDownloadConfig:
         self.finish_task: int = 0
         self.need_check: bool = False
         self.upload_telegram_chat_id: Union[int, str] = None
+        self.node: TaskNode = TaskNode(0)
+
+
+def get_config(config, key, default=None, val_type=str, verbose=True):
+    """
+    Retrieves a configuration value from the given `config` dictionary
+    based on the specified `key`.
+
+    Args:
+        config (dict): A dictionary containing the configuration values.
+        key (str): The key of the configuration value to retrieve.
+        default (Any, optional): The default value to be returned
+            if the `key` is not found.
+        val_type (type, optional): The data type of the configuration value.
+        verbose (bool, optional): A flag indicating whether to print
+            a warning message if the `key` is not found.
+
+    Returns:
+        The configuration value associated with the specified `key`,
+         converted to the specified `type`. If the `key` is not found,
+         the `default` value is returned.
+    """
+    val = config.get(key, default)
+    if isinstance(val, val_type):
+        return val
+
+    if verbose:
+        logger.warning(f"{key} is not {val_type.__name__}")
+
+    return default
 
 
 class Application:
@@ -194,7 +371,6 @@ class Application:
 
         self.chat_download_config: dict = {}
 
-        self.disable_syslog: list = []
         self.save_path = os.path.join(os.path.abspath("."), "downloads")
         self.temp_save_path = os.path.join(os.path.abspath("."), "temp")
         self.api_id: str = ""
@@ -215,12 +391,25 @@ class Application:
         self.cloud_drive_config = CloudDriveConfig()
         self.hide_file_name = False
         self.caption_name_dict: dict = {}
+        self.caption_entities_dict: dict = {}
         self.max_concurrent_transmissions: int = 1
-        self.web_host: str = "localhost"
+        self.web_host: str = "0.0.0.0"
         self.web_port: int = 5000
         self.max_download_task: int = 5
         self.language = Language.EN
         self.after_upload_telegram_delete: bool = True
+        self.web_login_secret: str = ""
+        self.debug_web: bool = False
+        self.log_level: str = "INFO"
+        self.start_timeout: int = 60
+        self.allowed_user_ids: yaml.comments.CommentedSeq = yaml.comments.CommentedSeq(
+            []
+        )
+        self.date_format: str = "%Y_%m"
+        self.drop_no_audio_video: bool = False
+        self.enable_download_txt: bool = False
+
+        self.forward_limit_call = LimitCall(max_limit_call_times=33)
 
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
@@ -246,9 +435,6 @@ class Application:
         # TODO: judge the storage if enough,and provide more path
         if _config.get("save_path") is not None:
             self.save_path = _config["save_path"]
-
-        if _config.get("disable_syslog") is not None:
-            self.disable_syslog = _config["disable_syslog"]
 
         self.api_id = _config["api_id"]
         self.api_hash = _config["api_hash"]
@@ -305,12 +491,14 @@ class Application:
 
         # TODO: add check if expression exist syntax error
 
-        self.max_concurrent_transmissions = _config.get(
-            "max_concurrent_transmissions", self.max_concurrent_transmissions
-        )
-
         self.max_download_task = _config.get(
             "max_download_task", self.max_download_task
+        )
+
+        self.max_concurrent_transmissions = self.max_download_task * 5
+
+        self.max_concurrent_transmissions = _config.get(
+            "max_concurrent_transmissions", self.max_concurrent_transmissions
         )
 
         language = _config.get("language", "EN")
@@ -323,6 +511,53 @@ class Application:
         self.after_upload_telegram_delete = _config.get(
             "after_upload_telegram_delete", self.after_upload_telegram_delete
         )
+
+        self.web_login_secret = str(
+            _config.get("web_login_secret", self.web_login_secret)
+        )
+        self.debug_web = _config.get("debug_web", self.debug_web)
+        self.log_level = _config.get("log_level", self.log_level)
+
+        self.start_timeout = get_config(
+            _config, "start_timeout", self.start_timeout, int
+        )
+
+        self.allowed_user_ids = get_config(
+            _config,
+            "allowed_user_ids",
+            self.allowed_user_ids,
+            yaml.comments.CommentedSeq,
+        )
+
+        self.date_format = get_config(
+            _config,
+            "date_format",
+            self.date_format,
+            str,
+        )
+
+        self.drop_no_audio_video = get_config(
+            _config, "drop_no_audio_video", self.drop_no_audio_video, bool
+        )
+
+        self.enable_download_txt = get_config(
+            _config, "enable_download_txt", self.enable_download_txt, bool
+        )
+
+        try:
+            date = datetime(2023, 10, 31)
+            date.strftime(self.date_format)
+        except Exception as e:
+            logger.warning(f"config date format error: {e}")
+            self.date_format = "%Y_%m"
+
+        forward_limit = _config.get("forward_limit", None)
+        if forward_limit:
+            try:
+                forward_limit = int(forward_limit)
+                self.forward_limit_call.max_limit_call_times = forward_limit
+            except ValueError:
+                pass
 
         if _config.get("chat"):
             chat = _config["chat"]
@@ -425,23 +660,35 @@ class Application:
                             ] = True
         return True
 
-    async def upload_file(self, local_file_path: str):
+    async def upload_file(
+        self,
+        local_file_path: str,
+        progress_callback: Callable = None,
+        progress_args: tuple = (),
+    ) -> bool:
         """Upload file"""
 
         if not self.cloud_drive_config.enable_upload_file:
-            return
+            return False
 
+        ret: bool = False
         if self.cloud_drive_config.upload_adapter == "rclone":
-            await CloudDrive.rclone_upload_file(
-                self.cloud_drive_config, self.save_path, local_file_path
+            ret = await CloudDrive.rclone_upload_file(
+                self.cloud_drive_config,
+                self.save_path,
+                local_file_path,
+                progress_callback,
+                progress_args,
             )
         elif self.cloud_drive_config.upload_adapter == "aligo":
-            await self.loop.run_in_executor(
+            ret = await self.loop.run_in_executor(
                 self.executor,
                 CloudDrive.aligo_upload_file(
                     self.cloud_drive_config, self.save_path, local_file_path
                 ),
             )
+
+        return ret
 
     def get_file_save_path(
         self, media_type: str, chat_title: str, media_datetime: str
@@ -517,7 +764,7 @@ class Application:
         return validate_title(res)
 
     def need_skip_message(
-        self, download_config: ChatDownloadConfig, message_id: int, meta_data: MetaData
+        self, download_config: ChatDownloadConfig, message_id: int
     ) -> bool:
         """if need skip download message.
 
@@ -528,10 +775,6 @@ class Application:
 
         message_id: int
             Readily to download message id
-
-        meta_data: MetaData
-            Ready to match filter
-
         Returns
         -------
         bool
@@ -539,13 +782,26 @@ class Application:
         if message_id in download_config.ids_to_retry_dict:
             return True
 
-        if download_config.download_filter:
-            self.download_filter.set_meta_data(meta_data)
-            exec_res = not self.download_filter.exec(download_config.download_filter)
-            return exec_res
-
         return False
 
+    def exec_filter(self, download_config: ChatDownloadConfig, meta_data: MetaData):
+        """
+        Executes the filter on the given download configuration.
+
+        Args:
+            download_config (ChatDownloadConfig): The download configuration object.
+            meta_data (MetaData): The meta data object.
+
+        Returns:
+            bool: The result of executing the filter.
+        """
+        if download_config.download_filter:
+            self.download_filter.set_meta_data(meta_data)
+            return self.download_filter.exec(download_config.download_filter)
+
+        return True
+
+    # pylint: disable = R0912
     def update_config(self, immediate: bool = True):
         """update config
 
@@ -563,22 +819,32 @@ class Application:
         # pylint: disable = R1733
         for key, value in self.chat_download_config.items():
             # pylint: disable = W0201
-            self.chat_download_config[key].ids_to_retry = (
-                list(set(value.ids_to_retry) - set(value.downloaded_ids))
-                + value.failed_ids
-            )
+            unfinished_ids = set(value.ids_to_retry)
+
+            for it in value.ids_to_retry:
+                if  value.node.download_status.get(
+                    it, DownloadStatus.FailedDownload
+                ) in [DownloadStatus.SuccessDownload, DownloadStatus.SkipDownload]:
+                    unfinished_ids.remove(it)
+
+            for _idx, _value in value.node.download_status.items():
+                if DownloadStatus.SuccessDownload != _value and DownloadStatus.SkipDownload != _value:
+                    unfinished_ids.add(_idx)
+
+            self.chat_download_config[key].ids_to_retry = list(unfinished_ids)
 
             if idx >= len(self.app_data["chat"]):
                 self.app_data["chat"].append({})
 
-            self.config["chat"][idx][
-                "last_read_message_id"
-            ] = value.last_read_message_id
+            if value.finish_task:
+                self.config["chat"][idx]["last_read_message_id"] = (
+                    value.last_read_message_id + 1
+                )
+
             self.app_data["chat"][idx]["chat_id"] = key
             self.app_data["chat"][idx]["ids_to_retry"] = value.ids_to_retry
             idx += 1
 
-        self.config["disable_syslog"] = self.disable_syslog
         self.config["save_path"] = self.save_path
         self.config["file_path_prefix"] = self.file_path_prefix
 
@@ -684,22 +950,47 @@ class Application:
 
         return str(self.caption_name_dict[chat_id][media_group_id])
 
+    def set_caption_entities(
+        self, chat_id: Union[int, str], media_group_id: Optional[str], caption_entities
+    ):
+        """
+        set caption entities map
+        """
+        if not media_group_id:
+            return
+
+        if chat_id in self.caption_entities_dict:
+            self.caption_entities_dict[chat_id][media_group_id] = caption_entities
+        else:
+            self.caption_entities_dict[chat_id] = {media_group_id: caption_entities}
+
+    def get_caption_entities(
+        self, chat_id: Union[int, str], media_group_id: Optional[str]
+    ):
+        """
+        get caption entities map
+        """
+        if (
+            not media_group_id
+            or chat_id not in self.caption_entities_dict
+            or media_group_id not in self.caption_entities_dict[chat_id]
+        ):
+            return None
+
+        return self.caption_entities_dict[chat_id][media_group_id]
+
     def set_download_id(
-        self, chat_id: Union[int, str], message_id: int, download_status: DownloadStatus
+        self, node: TaskNode, message_id: int, download_status: DownloadStatus
     ):
         """Set Download status"""
         if download_status is DownloadStatus.SuccessDownload:
             self.total_download_task += 1
 
-        if chat_id not in self.chat_download_config:
+        if node.chat_id not in self.chat_download_config:
             return
 
-        self.chat_download_config[chat_id].finish_task += 1
+        self.chat_download_config[node.chat_id].finish_task += 1
 
-        self.chat_download_config[chat_id].last_read_message_id = max(
-            self.chat_download_config[chat_id].last_read_message_id, message_id
+        self.chat_download_config[node.chat_id].last_read_message_id = max(
+            self.chat_download_config[node.chat_id].last_read_message_id, message_id
         )
-        if download_status is not DownloadStatus.FailedDownload:
-            self.chat_download_config[chat_id].downloaded_ids.append(message_id)
-        else:
-            self.chat_download_config[chat_id].failed_ids.append(message_id)

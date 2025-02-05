@@ -27,11 +27,22 @@
 * The robot is running, and the command `download` or `forward` is issued from the robot
 
 * Download as a one-time download tool
+
 ### UI
 
-![web](./screenshot/web_ui.gif)
+#### Web page
 
-After running, open the browser to visit `localhost:5000`
+> After running, open a browser and visit `localhost:5000`
+> If it is a remote machine, you need to configure web_host: 0.0.0.0
+
+
+<img alt="Code style: black" style="width:100%; high:60%;" src="./screenshot/web_ui.gif"/>
+
+### Robot
+
+> Need to configure bot_token, please refer to [Documentation](https://github.com/tangyoha/telegram_media_downloader/wiki/How-to-Download-Using-Robots)
+
+<img alt="Code style: black" style="width:60%; high:30%; " src="./screenshot/bot.gif"/>
 
 ### Support
 
@@ -146,6 +157,7 @@ media_types:
 - photo
 - video
 - voice
+- animation #gif
 file_formats:
   audio:
   - all
@@ -158,8 +170,6 @@ save_path: D:\telegram_media_downloader
 file_path_prefix:
 - chat_title
 - media_datetime
-disable_syslog:
-- INFO
 upload_drive:
   # required
   enable_upload_file: true
@@ -182,6 +192,11 @@ max_download_task: 5
 web_host: 127.0.0.1
 web_port: 5000
 language: EN
+web_login_secret: 123
+allowed_user_ids:
+- 'me'
+date_format: '%Y_%m'
+enable_download_txt: false
 ```
 
 - **api_hash**  - The api_hash you got from telegram apps
@@ -197,9 +212,8 @@ language: EN
 - **save_path** - The root directory where you want to store downloaded files.
 - **file_path_prefix** - Store file subfolders, the order of the list is not fixed, can be randomly combined.
   - `chat_title`      - Channel or group title, it will be chat id if not exist title.
-  - `media_datetime`  - Media date, also see pyrogram.types.Message.date.strftime("%Y_%m").
+  - `media_datetime`  - Media date.
   - `media_type`      - Media type, also see `media_types`.
-- **disable_syslog** - You can choose which types of logs to disable,see `logging._nameToLevel`.
 - **upload_drive** - You can upload file to cloud drive.
   - `enable_upload_file` - Enable upload file, default `false`.
   - `remote_dir` - Where you upload, like `drive_id/drive_name`.
@@ -217,8 +231,12 @@ language: EN
 - **web_host** - Web host
 - **web_port** - Web port
 - **language** - Application language, the default is English (`EN`), optional `ZH`(Chinese),`RU`,`UA`
-
-
+- **web_login_secret** - Web page login password, if not configured, no login is required to access the web page
+- **log_level** - see `logging._nameToLevel`.
+- **forward_limit** - Limit the number of forwards per minute, the default is 33, please do not modify this parameter by default.
+- **allowed_user_ids** - Who is allowed to use the robot? The default login account can be used. Please add single quotes to the name with @.
+- **date_format** Support custom configuration of media_datetime format in file_path_prefix.see [python-datetime](https://docs.python.org/3/library/datetime.html)
+- **enable_download_txt** Enable download txt file, default `false`
 
 ## Execution
 
@@ -264,6 +282,8 @@ Help us keep Telegram Media Downloader open and inclusive. Please read and follo
 
 
 ### Sponsor
+
+[PayPal](https://paypal.me/tangyoha?country.x=C2&locale.x=zh_XC)
 
 <p>
 <img alt="Code style: black" style="width:30%" src="./screenshot/alipay.JPG">
